@@ -1,0 +1,10 @@
+<VirtualHost %%ipaddress%%:80>
+    AddDefaultCharset UTF-8
+    ServerAdmin %%ServerAdmin%%
+    ServerName %%ServerName%%
+    %%ServerAlias%% %%ServerName%%.example.com
+    ErrorLog logs/%%LogErrror%%
+    CustomLog logs/%%LogAccess%% combined
+    DocumentRoot "%%DocumentRoot%%"
+</VirtualHost>
+

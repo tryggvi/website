@@ -1,0 +1,242 @@
+#!/usr/bin/perl
+# 
+# Website configurator
+#    Copyright (C) 2014  Tryggvi Farestveit <tryggvi@ok.is>
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU Affero General Public License as
+#    published by the Free Software Foundation, either version 3 of the
+#    License, or (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU Affero General Public License for more details.
+#
+#    You should have received a copy of the GNU Affero General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use strict;
+use Getopt::Long;
+
+my $template_dir = "/opt/website/templates";
+my $template_default = "default.conf";
+
+my $default_shell = "/sbin/nologin";
+my $default_group = "www";
+my $default_home = "/home";
+my $default_ip = "192.168.1.1";
+my $default_server_admin = "webmaster\@example.com";
+
+my $config_dir = "/etc/httpd/conf.d/websites.d";
+
+my ($o_domain, $o_alias, $o_noalias, $o_verb, $o_help, $o_nouser, $o_primary, $docuroot, $config, $o_sql);
+
+sub print_usage() {
+	print "Usage: $0 [-v] -D <devices> [--collect|--ping|--backup|--all]\n";
+}
+
+sub help() {
+	print "$0\n";
+	print <<EOT;
+-v, --verbose
+	print extra debugging information
+-h, --help
+	print this help message
+-D, --domain=example.com
+	Create user as example.com and config for example.com and www.example.com
+-N, --no-alias
+	Do not create alias for www.example.com
+-u, --no-user
+	Do not create user
+-A, --alias=example2.com,www.example.com
+	Default alias is example.com. Overwrite current alias.
+-P, --primary=www.example.com
+	Set primary as other than default www.example.com
+--sql
+	Display DB create information
+EOT
+}
+
+sub check_options {
+    Getopt::Long::Configure ("bundling");
+	GetOptions(
+   	'v'	=> \$o_verb,		'verbose'	=> \$o_verb,
+        'h'     => \$o_help,    	'help'        	=> \$o_help,
+        'D:s'   => \$o_domain,		'domain:s'	=> \$o_domain,
+        'A:s'   => \$o_alias,		'alias:s'	=> \$o_alias,
+        'N'     => \$o_noalias,    	'no-alias'    	=> \$o_noalias,
+        'u'     => \$o_nouser,    	'no-user'    	=> \$o_nouser,
+        'p:s'     => \$o_primary,    	'primary:s'    	=> \$o_primary,
+	'sql'	=> \$o_sql,
+	);
+
+	if(defined ($o_help)){
+		help(); 
+		exit 1;
+	}
+
+	if(defined($o_verb)){
+		print "Set verbose: on\n";
+	}
+
+	if(!defined($o_domain)){
+		print "Domain missing. Use --domain=example.com\n";
+		exit;
+	} else {
+		if(!$o_domain){
+			print "Domain name empty\n";
+			exit;
+		}
+	}
+
+	if(!defined($o_primary)){
+		$o_primary = "www.$o_domain";
+		$o_alias = $o_domain;
+	}
+
+	if(defined($o_sql)){
+		print "SQL create information will be displayed\n";
+	}
+
+	print "Set primary name as: $o_primary\n";
+}
+
+sub printlog($){
+	my ($msg) = @_;
+
+	if($o_verb){
+		print "$msg\n",
+	}
+}
+
+sub UserCreate($){
+	my ($username) = @_;
+
+	if(!$default_shell){
+		$default_shell = "/sbin/nologin";
+	}
+
+	my $cmd = "/usr/sbin/useradd -s $default_shell";
+	if($default_group){
+		$cmd .= " -g $default_group";
+	}
+
+	$cmd .= " $username";
+
+	printlog($cmd);
+	system($cmd);
+
+	my $cmd2 = "/bin/chmod 755 $default_home/$username";
+	printlog($cmd2);
+	system($cmd2);
+
+	# Create /home/user/web
+	DocurootCreate("$default_home/$username/web", $username, $default_group);
+}
+
+sub DocurootCreate($$$){
+	my ($dir, $user, $group) = @_;
+	if(-e $dir){
+		printlog("Directory $dir already exists");
+	} else {
+		printlog("Creating $dir");
+		mkdir $dir;
+		my $cmd = "/bin/chown $user:$group $dir";
+		printlog("Executing $cmd");
+		system($cmd);
+	}
+}
+
+sub init(){
+	if(!-e $config_dir){
+		printlog("Creating $config_dir");
+		mkdir $config_dir;
+	}
+
+	if(-e $config){
+		print "Config $config already exists. Exiting...\n";
+		exit;
+	}
+}
+
+sub ConfigCreate(){
+	my $template = "$template_dir/$template_default";
+
+	printlog("Creating config $config using template $template");
+
+	my $log_error = "$o_primary-error.log";
+	my $log_access = "$o_primary-access.log";
+
+	my $alias;
+	if($o_alias){
+		$alias = "ServerAlias $o_alias";
+	}
+
+	open(C, ">$config");
+	open(T, "$template");
+	while(<T>){
+		chomp($_);
+
+		$_ =~ s/%%ipaddress%%/$default_ip/g; # ip addr
+		$_ =~ s/%%ServerAdmin%%/$default_server_admin/g; # 
+		$_ =~ s/%%ServerName%%/$o_primary/g; #
+		$_ =~ s/%%ServerAlias%%/$alias/g; # 
+		$_ =~ s/%%LogErrror%%/$log_error/g; # 
+		$_ =~ s/%%LogAccess%%/$log_access/g; # 
+		$_ =~ s/%%DocumentRoot%%/$docuroot/g; # 
+
+		print C "$_\n";
+	}
+	close(T);
+	close(C);
+}
+
+sub SQLDump(){
+	my $name = $o_domain;
+	$name =~ s/-/_/i;
+	$name =~ s/\./_/i;
+	$name = substr($name, 0, 16);
+
+	my $password = GeneratePassword();
+	my $db = $name;
+
+print <<EOF	
+create database $db;
+ 
+CREATE USER '$name'\@'localhost' IDENTIFIED BY '$password';
+GRANT ALL ON $db.* TO '$name'\@'localhost';
+flush privileges;
+
+EOF
+}
+
+sub GeneratePassword(){
+	my @chars = ("A".."Z", "a".."z");
+	my $string;
+	$string .= $chars[rand @chars] for 1..12;
+	return $string;
+}
+
+check_options();
+$config = "$config_dir/$o_primary.conf";
+
+init();
+
+my $return = system("id $o_domain > /dev/null 2>&1");
+if($return){
+	printlog("User $o_domain does not exists. Creating.");
+	UserCreate($o_domain);
+	print "Remember to set password for user $o_domain\n";
+} elsif(!$o_nouser){
+	print "User $o_domain exists. Exiting.\n";
+	exit;
+}
+
+$docuroot = "$default_home/$o_domain/web/$o_primary";
+DocurootCreate($docuroot, $o_domain, $default_group);
+ConfigCreate();
+
+if($o_sql){
+	SQLDump();
+}
